@@ -71,3 +71,136 @@ EmailInputField(
     label = { Text(text = "Email address") },
 )
 ```
+이제 완성된 ctronl과 vissibility를 가졌다. email field의 내용과 validation status에 대해서 완성된 control과 visibility를 가졌다.;
+이것은 composable이 훨씬 더 유연하게 한다. 예를 들어 다른 시나리오에서 다른 validation 전략을 실행할 수 있다. 우리의 callback은 사용자가 email field를 업데이트 할 때마다 알림 받고 각 업데이트에 대해서, 우리는 email이 valid한지 계산한다.
+그 업데이트된 이메일 값과 유효성 값은 composable에서 email field를 업데이트하고 Invalid field를 숨기는데 사용된다.<br>
+
+말하자면, 이 솔루션은 완벽하지 않다. 우리가 이 컴포저블을 사용하기 원하는 다양한 장소가 있다면, 우리는 모든 장소에서 그 state를 다룰 필요가 있다. 잠재적으로 같은 로직을 우리의 app에 복제하면서.<br>
+
+이것을 다루기 위한 더 나은 방식이 있는가?
+대부분의 경우에 우리가 이용할 수 있는 몇 기본 방법을 가지는 동시에 + 그 state가 필요할 때, 사용자 지정(커스텀)을 위해 우리의 state를 끌어 올리는 방법을 보자. 
+
+
+## 기본 상태 끌어올리기 (Default state hoisting)
+첫 단계는 `interface`를 정의하는 것이다. 우리의 경우, 우리의 state를 정의하는 2개의 item(`email`과 `isValid`)이 있다.
+```kotlin
+@Stable
+interface EmailState {
+    var email: String
+    val isValid: Boolean
+}
+```
+Jetpack Compose의 컨벤션을 사용하는 것에 주목해라. 이 상태 인터페이스는 `State`를 가진 컴포저블이 붙고 인터페이스의 이름 끝에 컴포저블 이름이 이어져 붙어있다.<br>
+
+다음 단계로 우리는 이 인터페이스의 구현(implementation)을 만들 것이다. 이때, 이 인터페이스는 우리가 커스텀할 필요가 없는 모든 케이스에 대해 기본 유효성을 제공하는 것이다.
+```kotlin
+class EmailInputFieldStateImpl(
+    email: String = "",
+) : EmailInputFieldState {
+
+    // 1
+    override var email: String by mutableStateOf(email)
+        private set
+
+    // 2    
+    override val isValid by derivedStateOf { isValidEmail(_email) }
+
+    // 3
+    private fun isValidEmail(email: String): Boolean =
+        email.isEmpty() || Patterns.EMAIL_ADDRESS.matcher(email).matches()
+
+    companion object {
+        // 4
+        val Saver = Saver<EmailInputFieldStateImpl, List<Any>>(
+            save = { listOf(it._text) },
+            restore = {
+                EmailInputFieldStateImpl(
+                    email = it[0] as String,
+                )
+            }
+        )
+    }
+}
+
+@Composable
+fun rememberEmailInputFieldState(): EmailInputFieldState = rememberSaveable(
+    saver = EmailInputFieldStateImpl.Saver
+) {
+    EmailInputFieldStateImpl("")
+}
+```
+1. 우리는 email value를 담는 a private `mutableStateOf`를 정의한다. 이것은 우리가 생성자에서 받는 값으로 초기화 된다. 생성자의 기본 값은 empty string이다. 우리는 email value를 get, set하는 a public property를 노출시킨다; 그 email value는 observalbe 해진다.
+2. `isValid` 필드를 위한 두 번째 `mutableStateOf`를 정의한다. 이 값이 이메일 필드로부터 자극 받아서, 컴포즈로부터 기존의 `derivedStateOf`를 이용한다. 이 값 역시 마찬가지로 observable이다.
+3. 이것은 우리의 표준 이메일 검증 로직이다.
+4. 우리는 a saver를 제공한다. 그 결과 activity나 fragment가 우리의 composable이 재 생성되는 것을 주관할 때 그 state는 저장되어지고 회복 된다.
+5. 그 state는 기억되어질 필요가 있다. 그래서 우리는 하나의 utility function을 가진다. 그 utility function은 우리의 상태를 기억하고 그 saver가 그것의 내용을 보존하게 한다. 즉, 다음의 표준 젯펙 컴포즈 컨벤션에서, 이러한 메소드는 `remember`이란 이름으로 시작한다.
+
+다음 단계로, 우리는 우리의 email composable을 다시 작서애서 이 state를 수용하고 그것의 값을 사용해서 UI를 drive할 것이다.
+다른 말로, 우리는 email value, valid flag, state의 callback을 대체할 것이다. 일단 우리가 우리의 composable을 refactor하면, 그것은 아래와 같다.
+
+```kotlin
+@Composable
+fun EmailInputField(
+    modifier: Modifier,
+    state : EmailInputFieldState = rememberEmailInputFieldState(),
+    label : @Composable (()->Unit)? = null,
+){
+    Column(modifier = modifier){
+        OutlinedTextField(
+            value = state.email,
+            onValueChange = { value -> state.email = value },
+            modifier = Modifier.fillMaxWidth(),
+            label = label,
+            isError = !state.isValid,
+        )
+        if (!state.isValid) {
+            Text(
+                text = "Invalid email",
+                style = MaterialTheme.typography.caption,
+                color = MaterialTheme.colors.error,
+            )
+        }
+    }
+}
+```
+우리는 `EmailInputFieldState` 타입의 `state`를 받아들이고 그것을 우리의 표준 구현의 기본으로하고 있다.
+이제, 사용자가 email input field를 업뎃할 때, 우리는 그 상태의 email field를 업뎃한다. 그리고 이것은 email의 유효성 계산을 유발하고 그리고 나서 error field가 표시되는지 아닌지를 결정한다.<br>
+
+이러한 해결책으로, 우리는 각 call site의 logic을 처리하지 않아도 된다. 만약 기본 이메일 유효성이 우리에게 작동한다면, 우리는 그 기본 상태가 우리의 input을 다루게 한다.<br>
+
+이 위젯을 사용하기 위해, 우리는 우리의 composition tree에 아래와 같이 그것을 추가한다.
+```kotlin
+EmailInputField(
+    modifier = Modifier
+        .fillMaxWidth()
+        .padding(all = 16.dp),
+    label = { Text(text = "Email address") },
+)
+```
+만약 우리가 우리의 custom email validation을 갖고 싶다면, 우리는 EmailInputFieldState의 구현을 만들고 그것을 composable로 제공하면 된다.<br>
+
+이러한 구현과 함께, 우리는 그 email field 값과 그것의 유효성을 관찰할 수 있다. 기분 상태 구현을 사용하면서, 우리는 그저 composable 외부에서 그 상태를 초기화하고 그것을 생성자로 제공해줄 필요가 있다.
+아래의 정보 한토막(snippet)은 어떻게 해야하는 지 보옂주고, 현재 이메일 주소가 무엇이고 그것이 타당한지를 나타내주는 email composable 아래의 textfield를 보여준다.
+```kotlin
+val state = rememberEmailInputFieldState()
+
+EmailInputField(
+    modifier = Modifier
+        .fillMaxWidth()
+        .padding(all = 16.dp),
+    state = state,
+    label = { Text(text = "Email address") },
+)
+
+Text(
+    text = "Email [${state.email}] is ${(if (state.isValid) "valid" else "invalid")}",
+    modifier = Modifier.padding(all = 16.dp),
+    style = MaterialTheme.typography.body1,
+)
+```
+우리는 제공된 `rememberEmailInputFieldState` 메소드를 사용해서 그 상태의 객체를 얻고, 이 상태를 composable로 제공해서 그것을 현재 값과 유효성을 보여주는데 사용한다.<br>
+
+이러한 솔루션으로 우리는 두 세게의 장점을 모두 가진다. 
+우리는 있는 그대로 사용할 수 있고, 
+상태 자체를 처리하는 동시에 상태를 관찰할 수 있는 컴포저블을 가진다.
+그리고 그 컴포저블은 호출자가 그들 자신의 상태 구현을 제공하는 것을 허락함으로써 커스텀화된 선택을 제공할 수 있다.
